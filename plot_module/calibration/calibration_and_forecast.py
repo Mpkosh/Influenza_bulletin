@@ -48,16 +48,15 @@ def get_model_and_function(epid_data, type):
     return model, model_params, func_to_get_newly_data
 
 
-def run_calibration(model, data, model_params, method, epsilon):
+def run_calibration(model, data, model_params, coef_array_data, method, epsilon,sample,tune,draws,chains):
     """Запускает калибровку модели"""
     calibration = Calibration(model, data, model_params)
-    
     if method.lower() == "annealing":
         calibration.annealing_calibration()
     elif method.lower() == "abc":
         calibration.abc_calibration(sample=200, epsilon=epsilon)
     elif method.lower() == "mcmc":
-        calibration.mcmc_calibration(sample=600, epsilon=epsilon)
+        calibration.mcmc_calibration(coef_array_data=coef_array_data, sample=sample, epsilon=epsilon,tune=tune,draws=draws,chains=chains)
     else:
         calibration.optuna_calibration()
     
@@ -93,6 +92,7 @@ def setup_figure():
 
 def plot_confidence_intervals(model, func_to_get_newly_data, array, coef_array_all, ci_params, dur):
     """Рисует доверительные интервалы"""
+    
     for ci_par in ci_params:
         model.simulate(params=ci_par, modeling_duration=dur)
         res = func_to_get_newly_data()
@@ -131,10 +131,11 @@ def plot_best_model_and_data(model, func_to_get_newly_data, array, plot_data,
         )
 
 
-def configure_plot_style(array, x_labels):
+def configure_plot_style(array, x_labels, max_real_data):
     """Настраивает стиль графика"""
     plt.grid(True, which='both', linestyle='--', linewidth=0.5, alpha=0.7)
-    y_min, y_max = plt.ylim()
+    y_min, y_max = plt.ylim(-1, max_real_data)
+    #plt.ylim(0, max_real_data)
     y_ticks = np.arange(0, np.ceil(y_max) + 0.5, 5.0)
     plt.yticks(y_ticks)
     plt.xticks(array, x_labels, rotation=0, fontsize=10)
@@ -241,7 +242,11 @@ def calibration_forecast_plot(
     epsilon: int = 3000,
     output_mode: Literal["local", "bytes", "both"] = "local",
     is_prevalence_plot=True,
-    is_recovered_plot=True
+    is_recovered_plot=True,
+    sample:int=100,
+    tune:int=2500,
+    draws:int=600,
+    chains:int=4,
 ) -> Dict[str, Any]:
     """
     Создает калибровочный график прогноза
@@ -274,9 +279,10 @@ def calibration_forecast_plot(
     # 1. Подготовка данных
     data, dur, plot_data = prepare_calibration_data(epid_data, type)
     model, model_params, func_to_get_newly_data = get_model_and_function(epid_data, type)
-    
+
+    coef_array_data = np.array(10000 / epid_data.returned_df["total_population"])
     # 2. Калибровка
-    calibration = run_calibration(model, data, model_params, method, epsilon)
+    calibration = run_calibration(model, data, model_params, coef_array_data, method, epsilon, sample, tune, draws, chains)
     
     # 3. Подготовка к построению
     dur += forecast_duration * 7
@@ -289,7 +295,8 @@ def calibration_forecast_plot(
     plot_confidence_intervals(model, func_to_get_newly_data, array, coef_array_all, ci_params, dur)
     plot_best_model_and_data(model, func_to_get_newly_data, array, plot_data, 
                               coef_array_data, coef_array_forecast, dur)
-    configure_plot_style(array, x_labels)
+    real_data = plot_data[:, 0] * coef_array_data
+    configure_plot_style(array, x_labels, real_data.max()*1.2)
     
     # Базовое имя файла
     base_filename = f"{save_path}_{city}_{method}_{type}_{epid_data.begin_year}-{epid_data.end_year}" if save_path else ""
@@ -316,7 +323,7 @@ def calibration_forecast_plot(
     plot_confidence_intervals(model, func_to_get_newly_data, array, coef_array_all, ci_params, dur)
     plot_best_model_and_data(model, func_to_get_newly_data, array, plot_data, 
                               coef_array_data, coef_array_forecast, dur)
-    configure_plot_style(array, x_labels)
+    configure_plot_style(array, x_labels, real_data.max()*1.2)
     
     add_english_labels()
     translate_legend()

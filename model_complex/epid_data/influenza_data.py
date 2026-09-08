@@ -2,11 +2,14 @@ from datetime import datetime
 from io import StringIO
 
 import pandas as pd
+import tenacity
 import requests
-
+import os
+from dotenv import load_dotenv, find_dotenv
 from .epid_data import EpidData
 
 pd.options.mode.copy_on_write = True
+session = requests.Session()
 
 # TODO: remove dicts from global namespace
 table_from_dict = {
@@ -40,6 +43,22 @@ table_from_dict = {
 # PDM_ - Положительные на грипп H1pdm09
 # H3_ - Положительные на грипп H3
 # B_ - Положительные на грипп B
+
+# to override existing env.variables        
+load_dotenv(find_dotenv(usecwd=True), override=True)
+
+
+@tenacity.retry(wait=tenacity.wait_random_exponential(min=10, max=600),
+                stop=tenacity.stop_after_attempt(10), 
+                #reraise=True
+               )
+def api_call(url: str, session: requests.Session):
+    # Call the API
+    print(url)
+    response = session.get(url, timeout=60)
+    response.raise_for_status()
+    data = response.content.decode('utf-8')
+    return data
 
 
 def date_creation(input):
@@ -97,22 +116,22 @@ class InfluenzaData(EpidData):
 
     def __read_all_data(self):
         # получаем данные и декодируем их
-        data = requests.get(
-            self.url.format(
-                self.begin_year,
-                self.begin_week,
-                self.end_year,
-                self.end_week,
-                self.city_to_id[self.city.lower()],
-                "7e283896cf78e49c321dc60fab2850745a25215b621f600f648424d242a78c4a",
-            )
-        ).content.decode("utf-8")
+        url = self.url.format(
+            self.begin_year,
+            self.begin_week,
+            self.end_year,
+            self.end_week,
+            self.city_to_id[self.city.lower()],
+            os.getenv("AUTH_CODE"),
+        )
+
+        data = api_call(url, session)
 
         # print(data)
 
         # преобразуем в датафрэйм
         self.cases_df = pd.read_csv(StringIO(data), sep="|")
-
+        
         # print(self.cases_df)
 
         # преобразуем в даты
@@ -156,3 +175,4 @@ class InfluenzaData(EpidData):
         # )
 
         self.cases_df = self.cases_df.fillna(float("nan"))
+        

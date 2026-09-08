@@ -8,6 +8,7 @@ __pycache__/
 
 .vscode
 
+report_rscf/
 # Distribution / packaging
 .Python
 build/

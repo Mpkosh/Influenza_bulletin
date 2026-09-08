@@ -16,6 +16,8 @@ class ABC:
         model_params: ModelParams,
         sample: int = 100,
         epsilon: int = 3000,
+        draws:int = 100, 
+        chains:int = 1,
     ):
         alpha_dim, beta_dim = model.params()
         duration = len(data) // alpha_dim
@@ -53,7 +55,7 @@ class ABC:
                 observed=data,
             )
 
-            idata = pm.sample_smc(progressbar=False)
+            idata = pm.sample_smc(progressbar=False, draws=draws, chains=chains)
 
         posterior = idata.posterior.stack(samples=("draw", "chain"))
 

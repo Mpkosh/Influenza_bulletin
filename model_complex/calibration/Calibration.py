@@ -31,7 +31,7 @@ class Calibration:
         self.data = data.drop(columns=["datetime"]).to_numpy().T.flatten()
 
     def abc_calibration(self, sample=100, epsilon=3000):
-
+        print('ABC')
         ABC.calibrate(
             model=self.model,
             data=self.data,
@@ -62,15 +62,20 @@ class Calibration:
 
     def mcmc_calibration(
         self,
+        coef_array_data=[],
         sample=100,
-        epsilon=10000,
+        epsilon=10000,tune=2500,draws=500,chains=4
     ):
 
         MCMC.calibrate(
+            coef_array_data=coef_array_data,
             model=self.model,
             data=self.data,
             time_step=self.time_step,
             model_params=self.model_params,
             sample=sample,
             epsilon=epsilon,
+            tune=tune,
+            draws=draws,
+            chains=chains,
         )
