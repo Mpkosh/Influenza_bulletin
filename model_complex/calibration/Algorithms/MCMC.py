@@ -1,3 +1,5 @@
+from xxlimited import new
+
 import numpy as np
 import pymc as pm
 
@@ -5,8 +7,46 @@ from ...models import Model
 from ...utils import ModelParams
 import pytensor.tensor as pt
 
-class MCMC:
 
+def strict_epidemic_distance(epsilon, obs_data, sim_data):
+    """
+    Correct PyMC Simulator signature: (epsilon, obs_data, sim_data)
+    Must return a negative pseudo-log-likelihood!
+    """
+    sim_data_clipped = np.clip(sim_data, a_min=0, a_max=None)
+    max_obs = np.max(obs_data)
+    
+    obs_scaled = obs_data / max_obs
+    sim_scaled = sim_data_clipped / max_obs
+    
+    # 1. RMSE on peak region (> 35% of max)
+    important_indices = obs_scaled > 0.35
+    rmse = np.sqrt(np.mean((obs_scaled[important_indices] - sim_scaled[important_indices]) ** 2))
+    
+    # 2. Peak height penalty
+    peak_penalty = np.abs(np.max(obs_scaled) - np.max(sim_scaled))
+    
+    # 3. Smooth peak timing penalty (Center of Mass of peak region)
+    t = np.arange(len(obs_data))
+    w_obs = np.maximum(0, obs_scaled - 0.35)
+    w_sim = np.maximum(0, sim_scaled - 0.35)
+    
+    t_center_obs = np.sum(t * w_obs) / (np.sum(w_obs) + 1e-7)
+    t_center_sim = np.sum(t * w_sim) / (np.sum(w_sim) + 1e-7)
+    
+    # Smooth timing penalty (e.g., 0.05 per day of discrepancy)
+    timing_penalty = np.abs(t_center_obs - t_center_sim) * 0.05
+    
+    total_distance = rmse + peak_penalty + timing_penalty
+    
+    # negative pseudo-log-likelihood for PyMC to maximize!
+    return -0.5 * ((total_distance / epsilon) ** 2)
+
+
+class MCMC:
+    
+    
+    
     @classmethod
     def calibrate(
         self,
@@ -29,7 +69,15 @@ class MCMC:
             - draws -- number of mcmc draws
             - chains -- number of chains
         """
+        new = True
 
+        def simulation_func(rng, alpha, beta, size=None):
+                simulate_params.alpha = alpha
+                simulate_params.beta = beta
+        
+                model.simulate(params=simulate_params, modeling_duration=duration)
+                res = get_newly_infected_base_on_time_step()
+                return res
         alpha_dim, beta_dim = model.params()
         duration = len(data) // alpha_dim
         get_newly_infected_base_on_time_step = model.get_daily_newly_infected
@@ -44,135 +92,115 @@ class MCMC:
             population_size=model_params.population_size,
             initial_infectious=model_params.initial_infectious,
         )
+        if new:
+            with pm.Model() as pm_model:
+                log_ab_combined = pm.Normal("log_ab_combined", mu=-0.888, sigma=0.04, shape=(alpha_dim,))
+                log_ratio = pm.Normal("log_ratio", mu=-0.847, sigma=0.04) 
+                
+                log_alpha = (log_ab_combined + log_ratio) / 2.0
+                log_beta = (log_ab_combined - log_ratio) / 2.0
+                
+                alpha = pm.Deterministic("alpha", pm.math.exp(log_alpha))
+                beta = pm.Deterministic("beta", pm.math.exp(log_beta))
+                
+                out_of_bounds = (alpha > 1.0) | (beta > 1.0)
+                pm.Potential("bounds_check", pm.math.switch(out_of_bounds, -np.inf, 0.0))
+                
+                sim = pm.Simulator(
+                    "sim",
+                    simulation_func,
+                    params=[alpha, beta],
+                    epsilon=epsilon,
+                    distance=strict_epidemic_distance,
+                    observed=data,
+                )
+                
+                idata = pm.sample_smc(draws=draws, chains=chains, progressbar=True)
 
-        def simulation_func(rng, alpha, beta, size=None):
-            simulate_params.alpha = alpha
-            simulate_params.beta = beta
-
-            model.simulate(params=simulate_params, modeling_duration=duration)
-            return get_newly_infected_base_on_time_step()#*coef_array_data
+        else:
         
-        with pm.Model() as pm_model:
-            
-            alpha = pm.Uniform(name="alpha", lower=0., upper=1., shape=(alpha_dim,))
-            beta = pm.Uniform(name="beta", lower=0., upper=1., shape=(beta_dim,))
-            '''
+            with pm.Model() as pm_model:
+                alpha = pm.Uniform(name="alpha", lower=0, upper=1, shape=(alpha_dim,))
+                beta = pm.Uniform(name="beta", lower=0, upper=1, shape=(beta_dim,))
 
-            s = pm.Gamma("minus_log_product", alpha=2.0, beta=1.0, shape=(alpha_dim,))   # s = -log(alpha*beta): identified
-            d = pm.Uniform("log_ratio", lower=-s, upper=s, shape=(alpha_dim,))           # d =  log(alpha/beta): nuisance
+                sim = pm.Simulator(
+                    "sim",
+                    simulation_func,
+                    list(alpha) + [0] * (beta_dim - alpha_dim),
+                    beta,
+                    epsilon=epsilon,
+                    observed=data,
+                )
 
-            alpha = pm.Deterministic("alpha", pt.exp(-(s + d) / 2.0))
-            beta  = pm.Deterministic("beta",  pt.exp(-(s - d) / 2.0))
-            '''
-            
+                # Differential evolution (DE) Metropolis sampler
+                step = pm.DEMetropolisZ()
 
-            step = pm.DEMetropolisZ()   # tuning lambda beat tuning scaling in my tests
-            
-            sim = pm.Simulator(
-                "sim",
-                simulation_func,
-                list(alpha) + [0] * (beta_dim - alpha_dim),
-                beta,
-                epsilon=epsilon,
-                observed=data,
-            )
-            
-            # Differential evolution (DE) Metropolis sampler
-            # step=pm.DEMetropolisZ(proposal_dist=pm.LaplaceProposal)
-            #step = pm.DEMetropolisZ()
-            #idata = pm.sample_smc(draws=draws, chains=chains,progressbar=False)
+                idata = pm.sample(
+                    tune=tune,
+                    draws=draws,
+                    chains=chains,
+                    step=step,
+                    progressbar=False,
+                )
+                idata.extend(pm.sample_posterior_predictive(idata, progressbar=False))
 
-            idata = pm.sample(
-                tune=tune,
-                draws=draws,
-                chains=chains,
-                step=step,
-                progressbar=False,
-            )
-            idata.extend(pm.sample_posterior_predictive(idata, progressbar=False))
-
-        posterior = idata.posterior.stack(samples=("draw", "chain"))
-        print(posterior)
+            posterior = idata.posterior.stack(samples=("draw", "chain"))
 
         import arviz as az
-        def rhat1(sv):
-            return float(az.rhat(az.dict_to_dataset({"s": sv}))["s"].values.mean())
-        print(az.summary(idata, var_names=["alpha", "beta"])) # r_hat
+
+        print(az.summary(idata)) # r_hat
         az.plot_trace(idata)
 
-        '''
-        aS = idata.posterior["alpha"].values          # (chain, draw, alpha_dim)
-        bS = idata.posterior["beta"].values           # (chain, draw, beta_dim)
-        A  = aS.reshape(-1, aS.shape[-1])             # (S, alpha_dim) — row i = one sample
-        B  = bS.reshape(-1, bS.shape[-1])             # (S, beta_dim)
-        # or the idiomatic one-liner: az.extract(idata, var_names=["alpha", "beta"])
-        # thin if the simulator is expensive — 200-500 curves is plenty for bands
-        step = len(A) // sample
-        At, Bt = A[::step], B[::step]
+        if new:
+            alphas_sampled = idata.posterior["alpha"].values.reshape(-1)
+            betas_sampled = idata.posterior["beta"].values.reshape(-1)
+            step_size = len(alphas_sampled) // 300  # Нарисует "...// N" кривых
+            ci_params = []
+            for i in range(0, len(alphas_sampled), step_size):
+                a_val = alphas_sampled[i]
+                b_val = betas_sampled[i]
+                ci_par = ModelParams(
+                    alpha=[a_val], #alpha[:, i],
+                    beta=[b_val], #beta[:, i],
+                    population_size=model_params.population_size,
+                    initial_infectious=model_params.initial_infectious,
+                )
 
-        # deterministic runs: NO rng noise, NO epsilon — that's the calibration overlay
-        #curves = np.array([simulator(a.ravel(), b.ravel()) for a, b in zip(At, Bt)])  # (S, T)
-        '''
+                ci_params.append(ci_par)
+            model.set_ci_params(ci_params)
+            
+            simulate_params.alpha = [np.median(alphas_sampled, axis=0)]# [a.mean() for a in alpha]
+            simulate_params.beta = [np.median(betas_sampled, axis=0)]#[b.mean() for b in beta]
+            print(simulate_params)
 
-        '''
-        
-        '''
-        '''
-        aS = idata.posterior["alpha"].values          # (chain, draw, alpha_dim)
-        bS = idata.posterior["beta"].values           # (chain, draw, beta_dim)
-        A  = aS.reshape(-1, aS.shape[-1])             # (S, alpha_dim) — row i = one sample
-        B  = bS.reshape(-1, bS.shape[-1])             # (S, beta_dim)
-        step = len(A) // sample
-        At, Bt = A[::step], B[::step]
+        else:
+            aS = idata.posterior["alpha"].values          # (chain, draw, alpha_dim)
+            bS = idata.posterior["beta"].values           # (chain, draw, beta_dim)
+            A  = aS.reshape(-1, aS.shape[-1])             # (S, alpha_dim) — row i = one sample
+            B  = bS.reshape(-1, bS.shape[-1])             # (S, beta_dim)
+            
+            step = len(A) // sample
+            print(len(A), step, sample)
+            At, Bt = A[::step], B[::step]
 
-        ci_params = []
+            ci_params = []
 
-        for a,b in zip(At, Bt):
+            for a,b in zip(At, Bt):
+                #print(a,b)
+                ci_par = ModelParams(
+                    alpha=a.ravel(), #alpha[:, i],
+                    beta=b.ravel(), #beta[:, i],
+                    population_size=model_params.population_size,
+                    initial_infectious=model_params.initial_infectious,
+                )
 
-            ci_par = ModelParams(
-                alpha=a.ravel(), #alpha[:, i],
-                beta=b.ravel(), #beta[:, i],
-                population_size=model_params.population_size,
-                initial_infectious=model_params.initial_infectious,
-            )
+                ci_params.append(ci_par)
 
-            ci_params.append(ci_par)
+            model.set_ci_params(ci_params)
 
-        model.set_ci_params(ci_params)
-
-        simulate_params.alpha = [np.median(A, axis=0)]# [a.mean() for a in alpha]
-        simulate_params.beta = [np.median(B, axis=0)]#[b.mean() for b in beta]
-
-        model.set_best_params(simulate_params)
-        '''
+            simulate_params.alpha = [np.median(A, axis=0)]# [a.mean() for a in alpha]
+            simulate_params.beta = [np.median(B, axis=0)]#[b.mean() for b in beta]
+            print(simulate_params)
 
 
-
-        alpha = np.array(
-            [
-                np.random.choice(posterior["alpha"][i], size=sample)
-                for i in range(alpha_dim)
-            ]
-        )
-        beta = np.array(
-            [np.random.choice(posterior["beta"][i], size=sample) for i in range(beta_dim)]
-        )
-
-        ci_params = []
-
-        for i in range(sample):
-
-            ci_par = ModelParams(
-                alpha=alpha[:, i],
-                beta=beta[:, i],
-                population_size=model_params.population_size,
-                initial_infectious=model_params.initial_infectious,
-            )
-
-            ci_params.append(ci_par)
-
-        model.set_ci_params(ci_params)
-
-        simulate_params.alpha = [a.mean() for a in alpha]
-        simulate_params.beta = [b.mean() for b in beta]
         model.set_best_params(simulate_params)

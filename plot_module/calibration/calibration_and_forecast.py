@@ -82,7 +82,7 @@ def prepare_x_axis(epid_data, dur):
 
 def setup_figure():
     """Настраивает фигуру matplotlib"""
-    desired_width_px, desired_height_px = 900, 330
+    desired_width_px, desired_height_px =1000, 330
     dpi = 600
     width_inches = desired_width_px / dpi
     height_inches = desired_height_px / dpi
@@ -92,53 +92,73 @@ def setup_figure():
 
 def plot_confidence_intervals(model, func_to_get_newly_data, array, coef_array_all, ci_params, dur):
     """Рисует доверительные интервалы"""
-    
+    print(len(ci_params),'len ciparams')
+    n=5
     for ci_par in ci_params:
         model.simulate(params=ci_par, modeling_duration=dur)
         res = func_to_get_newly_data()
         for i in range(len(res)):
-            plt.plot(array, res[i] * coef_array_all, lw=0.3, alpha=0.5, color='lightblue')
+            plt.plot(array[n:], res[i][n:] * coef_array_all[n:], lw=0.3, alpha=0.05, color='lightblue')
 
 
 def plot_best_model_and_data(model, func_to_get_newly_data, array, plot_data, 
                               coef_array_data, coef_array_forecast, dur):
     """Рисует лучшую модель и данные"""
+    print(model.get_best_params())
+
     model.simulate(params=model.get_best_params(), modeling_duration=dur)
     res = func_to_get_newly_data()
-    
+    n = 5
     for i in range(len(res)):
-        r2 = round(r2_score(plot_data[:, i], res[i][:len(plot_data[:, i])]), 2)
+        # r2 = round(r2_score(plot_data[:, i], res[i][:len(plot_data[:, i])]), 2)
+        print(len(plot_data[:, i]), len(res[i][:len(plot_data[:, i])]))
+        r2 = round(r2_score(plot_data[n:, i], res[i][n:n+len(plot_data[n:, i])]), 2)
         plt.plot(
-            array[:len(plot_data[:, i])],
-            res[i][:len(plot_data[:, i])] * coef_array_data,
+            array[n: n+len(plot_data[n:, i])],
+            res[i][n: n+len(plot_data[n:, i])] * coef_array_data[n: n+len(plot_data[n:, i])],
             label=f"Лучшая модель, $R^2$: {r2}",
             lw=1.0,
             color='royalblue',
         )
         
-        last_known_idx = len(plot_data[:, i]) - 1
+        last_known_idx = len(plot_data[n:, i]) - 1
+        print(last_known_idx, array[last_known_idx:])
         plt.plot(
-            array[last_known_idx:],
-            res[i][last_known_idx:] * coef_array_forecast,
+            array[n+last_known_idx:],
+            res[i][n+last_known_idx:] * coef_array_forecast,
             '--', color='lightcoral', alpha=1.0,
             label='Прогноз'
         )
         
         plt.scatter(
-            array[:len(plot_data[:, i])],
-            plot_data[:, i] * coef_array_data,
+            array[n:n+len(plot_data[n:, i])],
+            plot_data[n:, i] * coef_array_data[n:],
             marker="o", color='blue', zorder=5, label="Данные"
         )
-
+    
+       
 
 def configure_plot_style(array, x_labels, max_real_data):
     """Настраивает стиль графика"""
+    n=5
     plt.grid(True, which='both', linestyle='--', linewidth=0.5, alpha=0.7)
-    y_min, y_max = plt.ylim(-1, max_real_data)
+    y_min, y_max = plt.ylim()#-1, max(1,max_real_data))
+    plt.ylim(-1, y_max)
     #plt.ylim(0, max_real_data)
-    y_ticks = np.arange(0, np.ceil(y_max) + 0.5, 5.0)
+    if y_max < 5:
+        step = 1
+    else:
+        step = 5
+    y_ticks = np.arange(0, np.ceil(y_max) + 0.5, step)
     plt.yticks(y_ticks)
-    plt.xticks(array, x_labels, rotation=0, fontsize=10)
+    plt.xticks(array[n:], x_labels[n:], rotation=0, fontsize=10)
+
+    '''
+    x_min, x_max = plt.xlim()
+    print(x_min, x_max)
+    if x_min < 40:
+        plt.xlim(40, x_max)
+    '''
     plt.tight_layout(rect=[0.03, 0.05, 0.97, 1])
 
 
@@ -288,6 +308,7 @@ def calibration_forecast_plot(
     dur += forecast_duration * 7
     array, x_labels = prepare_x_axis(epid_data, dur)
     ci_params = list(model.get_ci_params())
+
     coef_array_data, coef_array_forecast, coef_array_all = calculate_coefficients(epid_data, forecast_duration)
     dpi = setup_figure()
     
